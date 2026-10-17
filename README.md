@@ -36,22 +36,27 @@ A bank or payment fintech has a fraud-review team that can look at only a small 
 
 ### Results
 
-Run on the real data to fill these tables (no real-data results exist yet; numbers produced on synthetic data are not reported here on purpose).
+Real IEEE-CIS data: 590,540 transactions over about 182 days, 3.5% fraud. Strict time split: **train** = earliest 413,378 transactions (3.52% fraud), **test** = latest 154,030 (3.47% fraud), with a gap between them. One run, one seed; no confidence intervals. Alert budget = share of test transactions a team could review. Full tables and plots: `docs/real_run/`.
 
 | Model | PR-AUC | Recall @0.5% | Recall @1% | Recall @2% | Precision @1% | Brier | ECE |
 |-------|--------|--------------|------------|------------|---------------|-------|-----|
-| rule | _run on real data_ | | | | | n/a | n/a |
-| logistic | | | | | | | |
-| logistic_balanced | | | | | | | |
-| lightgbm | | | | | | | |
-| lightgbm_spw | | | | | | | |
+| rule (hand-set, no labels) | 0.044 | 0.7% | 0.8% | 1.7% | 2.8% | n/a | n/a |
+| logistic | 0.417 | 13.1% | 22.5% | 33.6% | 78.2% | 0.026 | 0.007 |
+| logistic_balanced | 0.404 | 12.9% | 21.9% | 31.7% | 76.0% | 0.149 | 0.284 |
+| **lightgbm** | **0.500** | 13.1% | **24.3%** | **38.2%** | **84.2%** | **0.023** | **0.002** |
+| lightgbm_spw | 0.479 | 13.1% | 24.3% | 36.8% | 84.4% | 0.071 | 0.156 |
 
-| Cost view (assumed costs) | Value |
-|---------------------------|-------|
-| Cost with no review | _run on real data_ |
-| Minimum expected cost / at budget | |
-| Recall by test bucket (decay) | |
-| Score PSI, last test bucket vs train | |
+Test prevalence is 3.47%, so precision of 84% at a 1% budget is a lift of about 24 over random review.
+
+What the run shows:
+
+- **The hand-set rule is close to useless** (PR-AUC 0.044 against a 0.035 prevalence), so the learned models are earning their keep.
+- **LightGBM is best on every metric** (PR-AUC 0.50 vs 0.42 for logistic regression). At a 1% review budget it catches 24% of all fraud with 84% of alerts correct; at 2% it catches 38%.
+- **Class weights hurt calibration, not ranking.** `logistic_balanced` and `lightgbm_spw` rank about as well as their unweighted versions but their probabilities are badly off (ECE 0.28 and 0.16 vs 0.007 and 0.002). If scores are used as probabilities in a cost decision, do not use class weighting.
+- **Recall is small in absolute terms** because the budget is small: with 1% reviewed, at most about 29% of fraud (1% of transactions / 3.47% prevalence) could be caught even with perfect alerts. Always read recall together with the budget.
+- **Decay inside the 4 test months is not monotonic.** LightGBM's per-bucket PR-AUC is 0.55, 0.51, 0.44, 0.52 and its recall at 1% is 24%, 26%, 25%, 21%. Score PSI against train stays below 0.03. With only four buckets and one split, I would not read this as proof of stability or decay.
+- **Cost view (assumed costs, not from any institution):** expected cost with no review is 820,350; LightGBM reaches 315,173, the rule 638,517. The minimum for every model sits at the largest budget evaluated (10%), so the cost-optimal budget under these assumptions is at least that large; the grid should be widened before reading it as a recommendation.
+- **Top SHAP features** are `M4`, `C13`, `TransactionAmt`, `C5`, `C1`, `C14`, `card6`, `D2`. Most are anonymised columns, so the explanation says little about real-world causes.
 
 ### How to run
 
@@ -128,7 +133,21 @@ Outputs go to `reports/`: `metrics.csv`, `budget_table.csv`, `cost_curve.csv`, `
 
 ### შედეგები
 
-რეალურ მონაცემებზე გაშვების შემდეგ შეავსეთ ცხრილები (რეალური შედეგები ჯერ არ არსებობს; სინთეზურ მონაცემებზე მიღებული რიცხვები განზრახ არ არის მოყვანილი). ცხრილები იხილეთ ინგლისურ ნაწილში.
+რეალური IEEE-CIS მონაცემები: 590 540 ტრანზაქცია დაახლოებით 182 დღეზე, 3.5% თაღლითობა. მკაცრი დროითი გაყოფა: **train** = უადრესი 413 378 ტრანზაქცია (3.52%), **test** = უახლესი 154 030 (3.47%), მათ შორის დროის შუალედით. ერთი გაშვება, ერთი seed; სანდოობის ინტერვალები არ არის. სრული ცხრილები და გრაფიკები: `docs/real_run/`.
+
+| მოდელი | PR-AUC | Recall @0.5% | Recall @1% | Recall @2% | Precision @1% | Brier | ECE |
+|--------|--------|--------------|------------|------------|---------------|-------|-----|
+| წესი (ხელით, ლეიბლების გარეშე) | 0.044 | 0.7% | 0.8% | 1.7% | 2.8% | n/a | n/a |
+| logistic | 0.417 | 13.1% | 22.5% | 33.6% | 78.2% | 0.026 | 0.007 |
+| logistic_balanced | 0.404 | 12.9% | 21.9% | 31.7% | 76.0% | 0.149 | 0.284 |
+| **lightgbm** | **0.500** | 13.1% | **24.3%** | **38.2%** | **84.2%** | **0.023** | **0.002** |
+| lightgbm_spw | 0.479 | 13.1% | 24.3% | 36.8% | 84.4% | 0.071 | 0.156 |
+
+- LightGBM ყველა მეტრიკით საუკეთესოა. 1%-იანი შემოწმების ბიუჯეტით ის თაღლითობის 24%-ს იჭერს, ხოლო შეტყობინებების 84% სწორია; 2%-ით იჭერს 38%-ს.
+- კლასის წონები კალიბრაციას აზიანებს და არა დახარისხებას: `logistic_balanced`-ის ECE 0.28, ხოლო `lightgbm_spw`-ის 0.16, ანუ ალბათობები არასწორია. თუ ქულა ალბათობად გამოიყენება, წონები არ გამოიყენოთ.
+- ხელით დაწერილი წესი თითქმის უსარგებლოა (PR-AUC 0.044, პრევალენტობა 0.035).
+- ტესტის 4 თვის განმავლობაში დაცემა მონოტონური არ არის (LightGBM PR-AUC ბაკეტებში: 0.55, 0.51, 0.44, 0.52); მხოლოდ ერთი გაყოფის გამო სტაბილურობას ან დაცემას ამით ვერ დავამტკიცებთ.
+- ხარჯები დაშვებებია. მინიმალური ხარჯი ყველა მოდელზე ყველაზე დიდ შემოწმებულ ბიუჯეტზეა (10%), ამიტომ ბადე გასაფართოებელია, სანამ ეს რეკომენდაციად გამოიყენება.
 
 ### გაშვება
 

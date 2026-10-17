@@ -20,6 +20,16 @@ CAT_BASE = (["ProductCD", "card4", "card6", "P_emaildomain", "R_emaildomain", "D
              "id_30", "id_31", "id_33"] + [f"M{i}" for i in range(1, 10)])
 
 
+def needed_columns(cfg):
+    """Raw columns the pipeline actually uses (so the loader can skip the other ~350 V/id columns)."""
+    d, f = cfg["data"], cfg["features"]
+    cols = {d["id_col"], d["time_col"], d["target"], d["amount_col"]}
+    cols |= set(NUM_BASE) | set(CAT_BASE) | set(f["v_columns"]) | set(f["card_key"])
+    if f.get("device_key"):
+        cols.add(f["device_key"])
+    return cols
+
+
 def make_key(df, cols):
     """Join the key columns into one string; rows where ALL parts are missing get NaN."""
     cols = [cols] if isinstance(cols, str) else list(cols)

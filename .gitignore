@@ -13,3 +13,5 @@ data/synthetic/
 *.joblib
 reports/*
 !reports/.gitkeep
+
+reports_real/
