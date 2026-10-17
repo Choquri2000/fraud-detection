@@ -31,7 +31,7 @@ A bank or payment fintech has a fraud-review team that can look at only a small 
 - **Models:** hand-set rule baseline (amount z-score + 1 h velocity + unseen card; not fitted on labels), logistic regression and LightGBM, each with and without imbalance handling (`class_weight="balanced"` / `scale_pos_weight`). **No SMOTE.** Weighting changes predicted probabilities, so Brier score, ECE and calibration curves are reported next to ranking metrics.
 - **Capacity-aware evaluation:** PR-AUC, recall and precision at fixed budgets (`budget_table.csv`), expected-cost curve (`cost_curve.csv/.png`) with costs set in `configs/config.yaml` (review cost per alert vs loss on missed fraud, either amount-proportional or fixed). Ties in scores are broken randomly, not by row order.
 - **Decay and drift:** per-time-bucket PR-AUC and recall inside the test period (`bucket_performance.csv`), PSI of scores and key features versus train (`drift.csv`). Train scores are in-sample, so PSI is also given against the first test bucket.
-- **Interpretability:** SHAP summary for LightGBM.
+- **Interpretability:** SHAP summary (computed on the model set in `modeling.shap_model`, currently `lightgbm_spw`, not on the best table row `lightgbm`).
 - **Simple label-delay model:** fraud labels arrive late (chargebacks). The gap between train end and test start stands in for that delay so train labels are mature when scoring starts. This is a documented simplification, not a chargeback-timing model.
 
 ### Results
@@ -54,9 +54,21 @@ What the run shows:
 - **LightGBM is best on every metric** (PR-AUC 0.50 vs 0.42 for logistic regression). At a 1% review budget it catches 24% of all fraud with 84% of alerts correct; at 2% it catches 38%.
 - **Class weights hurt calibration, not ranking.** `logistic_balanced` and `lightgbm_spw` rank about as well as their unweighted versions but their probabilities are badly off (ECE 0.28 and 0.16 vs 0.007 and 0.002). If scores are used as probabilities in a cost decision, do not use class weighting.
 - **Recall is small in absolute terms** because the budget is small: with 1% reviewed, at most about 29% of fraud (1% of transactions / 3.47% prevalence) could be caught even with perfect alerts. Always read recall together with the budget.
-- **Decay inside the 4 test months is not monotonic.** LightGBM's per-bucket PR-AUC is 0.55, 0.51, 0.44, 0.52 and its recall at 1% is 24%, 26%, 25%, 21%. Score PSI against train stays below 0.03. With only four buckets and one split, I would not read this as proof of stability or decay.
+- **Decay inside the test window (about 55 days, four ~14-day buckets) is not monotonic.** LightGBM's per-bucket PR-AUC is 0.55, 0.51, 0.44, 0.52 and its recall at 1% is 24%, 26%, 25%, 21%. Score PSI against train stays below 0.03. With only four buckets and one split, I would not read this as proof of stability or decay.
 - **Cost view (assumed costs, not from any institution):** expected cost with no review is 820,350; LightGBM reaches 315,173, the rule 638,517. The minimum for every model sits at the largest budget evaluated (10%), so the cost-optimal budget under these assumptions is at least that large; the grid should be widened before reading it as a recommendation.
 - **Top SHAP features** are `M4`, `C13`, `TransactionAmt`, `C5`, `C1`, `C14`, `card6`, `D2`. Most are anonymised columns, so the explanation says little about real-world causes.
+
+### Known issues found by an independent review
+
+An independent, AI-assisted review of this repo (read-only; the numbers below were recomputed on the real data by the reviewer) changes how the headline should be read:
+
+- **The advertised point-in-time card/device features add almost nothing.** Dropping all of them: PR-AUC 0.502 vs 0.500. Dropping the Vesta columns `C1-C14` and `D1-D15` instead: PR-AUC 0.302 and precision at a 1% budget falls from 84% to 55%. The skill comes from those engineered columns, not from the behavioural features this project builds.
+- **The test set rewards recognising repeat victims.** 74% of test frauds sit on a card key that already had a fraud in training, and 74% of the top-1% alerts are `ProductCD = C` (10% of rows). On the subset where the card has no fraud in training, precision at the 0.5% budget is about 76% instead of 90.8%.
+- **Four different model families pick almost the same 699 frauds in the top 0.5%**, which points to one easily separable cluster of attacked cards. A card-cluster bootstrap gives a wider interval for precision at 0.5% (about 86-94%) than a row bootstrap.
+- **Label delay is not modelled.** The 7-day gap does not remove labels that would not yet exist at deployment. Training only on labels older than 30 days before the cut-off lowers PR-AUC from 0.50 to about 0.455.
+- **The cost curve's grid stops at 10% of transactions**, and the minimum sits at that edge, so no optimal budget is established.
+- **The card key** (built from `card1-6` and `addr1`) is an unvalidated proxy; some keys cover thousands of rows and are not one cardholder.
+- **One split, one seed, hand-set hyperparameters,** no confidence intervals in the table above.
 
 ### How to run
 
@@ -78,7 +90,7 @@ Outputs go to `reports/`: `metrics.csv`, `budget_table.csv`, `cost_curve.csv`, `
 - **Label delay is simplified.** Real chargebacks arrive over weeks and are censored near the end of the data; here only a fixed gap models that. Labels in the last days before the end of the file may still be immature.
 - **Costs are assumptions**, not estimates from data. Amount-proportional loss ignores recoveries, customer friction and fees.
 - Ranking is by score only; a production system might rank by expected loss (probability × amount).
-- Tests and CI run on **synthetic data with an invented signal** (fraud rings, drift injected on purpose). Synthetic metrics say nothing about real performance; the real-data run has not been done.
+- Tests and CI run on **synthetic data with an invented signal** (fraud rings, drift injected on purpose). Synthetic metrics say nothing about real performance. The real-data results above come from one run on the Kaggle files, which are not in this repo.
 - The ~3.5% fraud rate is the competition sample; real fraud is usually far rarer, so budgets and precision will differ in production.
 
 ### Structure
@@ -146,7 +158,7 @@ Outputs go to `reports/`: `metrics.csv`, `budget_table.csv`, `cost_curve.csv`, `
 - LightGBM ყველა მეტრიკით საუკეთესოა. 1%-იანი შემოწმების ბიუჯეტით ის თაღლითობის 24%-ს იჭერს, ხოლო შეტყობინებების 84% სწორია; 2%-ით იჭერს 38%-ს.
 - კლასის წონები კალიბრაციას აზიანებს და არა დახარისხებას: `logistic_balanced`-ის ECE 0.28, ხოლო `lightgbm_spw`-ის 0.16, ანუ ალბათობები არასწორია. თუ ქულა ალბათობად გამოიყენება, წონები არ გამოიყენოთ.
 - ხელით დაწერილი წესი თითქმის უსარგებლოა (PR-AUC 0.044, პრევალენტობა 0.035).
-- ტესტის 4 თვის განმავლობაში დაცემა მონოტონური არ არის (LightGBM PR-AUC ბაკეტებში: 0.55, 0.51, 0.44, 0.52); მხოლოდ ერთი გაყოფის გამო სტაბილურობას ან დაცემას ამით ვერ დავამტკიცებთ.
+- ტესტის დაახლოებით 55 დღის განმავლობაში დაცემა მონოტონური არ არის (LightGBM PR-AUC ბაკეტებში: 0.55, 0.51, 0.44, 0.52); მხოლოდ ერთი გაყოფის გამო სტაბილურობას ან დაცემას ამით ვერ დავამტკიცებთ.
 - ხარჯები დაშვებებია. მინიმალური ხარჯი ყველა მოდელზე ყველაზე დიდ შემოწმებულ ბიუჯეტზეა (10%), ამიტომ ბადე გასაფართოებელია, სანამ ეს რეკომენდაციად გამოიყენება.
 
 ### გაშვება
@@ -159,6 +171,13 @@ python run_experiment.py
 ```
 
 რეალური მონაცემებისთვის ჩამოტვირთეთ Kaggle-დან `train_transaction.csv` და `train_identity.csv` დირექტორიაში `data/raw/`.
+
+### ცნობილი ხარვეზები დამოუკიდებელი შემოწმებიდან
+
+- წარმოდგენილი point-in-time ბარათის/მოწყობილობის ნიშნები თითქმის არაფერს სძენს (PR-AUC 0.502 მათ გარეშე vs 0.500); უნარი C1-C14 და D1-D15 სვეტებიდან მოდის (მათ გარეშე PR-AUC 0.302).
+- ტესტში თაღლითობის 74% ისეთ ბარათზეა, რომელსაც train-ში უკვე ჰქონდა თაღლითობა; ტოპ 1% გაფრთხილების 74% `ProductCD = C`-ზეა.
+- ლეიბლის დაგვიანება მოდელირებული არ არის (30 დღიანი დაგვიანებით PR-AUC 0.50-დან დაახლოებით 0.455-მდე ეცემა).
+- ტესტის ფანჯარა დაახლოებით 55 დღეა და არა 4 თვე. ხარჯის მრუდის ბადე 10%-ზე ჩერდება. ერთი გაყოფა, ერთი seed.
 
 ### შეზღუდვები
 
