@@ -1,0 +1,58 @@
+data:
+  # Kaggle "IEEE-CIS Fraud Detection": place the two files here yourself (not redistributable).
+  transaction_path: data/raw/train_transaction.csv
+  identity_path: data/raw/train_identity.csv   # optional; set to null to skip
+  id_col: TransactionID
+  time_col: TransactionDT        # seconds since an UNKNOWN reference date (relative offset)
+  target: isFraud
+  amount_col: TransactionAmt
+
+split:
+  # Strict time order: train = earliest `train_frac` of the time range (quantile of rows),
+  # then a gap, then test = everything later. Never a random split.
+  train_frac: 0.7
+  # The gap doubles as a simple chargeback-delay model: fraud labels arrive days/weeks late, so
+  # the last `gap_days` before the test start are not used for training (their labels would be
+  # immature in production).
+  gap_days: 7
+  n_buckets: 4                   # equal-width time buckets of the test period (decay analysis)
+
+features:
+  # Proxy for an account: IEEE-CIS has no customer id. This is NOT a true identity.
+  card_key: [card1, card2, card3, card4, card5, card6, addr1]
+  device_key: DeviceInfo
+  velocity_windows_seconds: [3600, 86400]
+  top_k_categories: 25           # rare categories collapse to "__other__" (fitted on train only)
+  v_columns: [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12]
+
+modeling:
+  seed: 42
+  shap_sample: 2000
+  shap_model: lightgbm_spw
+  lightgbm:
+    n_estimators: 300
+    learning_rate: 0.05
+    num_leaves: 63
+    min_child_samples: 50
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+  logistic:
+    C: 1.0
+    max_iter: 500
+
+rule_baseline:
+  # Hand-set, NOT fitted to labels: amount unusual for this card + burst of recent activity + unseen card.
+  w_amount_z: 1.0
+  w_velocity_1h: 1.0
+  w_new_card: 0.5
+
+evaluation:
+  alert_budgets: [0.005, 0.01, 0.02]   # share of transactions the team can review
+  # ASSUMED costs, not estimated from data. Replace with your institution's numbers.
+  costs:
+    review_cost: 5.0                   # analyst time per alert (currency units)
+    missed_fraud_mode: amount          # "amount": loss = multiplier * TransactionAmt, "fixed": fixed_loss
+    missed_fraud_multiplier: 1.0
+    missed_fraud_fixed: 100.0
+  cost_curve_max_budget: 0.10
